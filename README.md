@@ -42,6 +42,7 @@ Self-test output is written to:
 - Style/formatting: style patching and style-only format application
 - Validation: parse/schema/lint + optional runtime verification
 - Layout intelligence: model extraction, scoring, deterministic auto-refine
+- Schema inspection: metadata-only table/column discovery with explicit consent gate
 
 ### `add_chart` layout op (via `report_patch_layout`)
 
@@ -53,6 +54,14 @@ Use `op="add_chart"` with `valueExpression` options:
 - `chartType=Column|Bar|Line|Area|Pie|Doughnut|Scatter|Bubble|Stock`
 - `aggregate=Sum|Avg|Min|Max|Count|CountDistinct|First|Last`
 - optional `series=Region`, `legend=true|false`, `palette=Default`, `title=...`
+
+### `report_inspect_schema` consent flow
+
+- The tool never runs without explicit `confirm=true`.
+- A non-confirmed call returns `CONSENT_REQUIRED` and a summary of what can be seen.
+- Scope is schema metadata only (tables/views/columns/types/nullability/ordinals).
+- The tool does not run user SQL and does not read table row values.
+- Use `tableAllowList`, `maxTables`, and `maxColumnsPerTable` for least-privilege inspection.
 
 ## Notes
 

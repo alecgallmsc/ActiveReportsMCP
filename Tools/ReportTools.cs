@@ -524,6 +524,33 @@ public sealed class ReportTools
         };
     }
 
+    [McpServerTool, Description("Inspect database schema metadata with explicit consent; returns tables and columns only.")]
+    public static ToolResult report_inspect_schema(
+        SchemaInspectionService schemaInspection,
+        [Description("Absolute or relative .rdlx path containing the target data source.")] string reportPath,
+        [Description("Optional data source name. Defaults to first report data source.")] string? dataSourceName = null,
+        [Description("Explicit user confirmation to allow metadata-only schema inspection.")] bool confirm = false,
+        [Description("Optional table allowlist (table or schema.table names).")]
+        List<string>? tableAllowList = null,
+        [Description("Maximum tables/views to return.")] int maxTables = 50,
+        [Description("Maximum columns to return per table/view.")] int maxColumnsPerTable = 100)
+    {
+        var loaded = TryLoadReport(reportPath);
+        if (!loaded.Ok)
+        {
+            return loaded.Result;
+        }
+
+        return schemaInspection.InspectFromReport(
+            loaded.Path!,
+            loaded.Rdlx!,
+            dataSourceName,
+            confirm,
+            tableAllowList,
+            maxTables,
+            maxColumnsPerTable);
+    }
+
     private static ToolResult PatchReport(
         string reportPath,
         string? outputPath,
