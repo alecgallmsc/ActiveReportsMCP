@@ -256,13 +256,38 @@ public sealed class ReportTools
 
             var canonical = documents.Canonicalize(refined.Rdlx);
             var hash = RdlxDocumentService.ComputeHash(canonical);
-            var targetPath = WriteReport(canonical, outputPath ?? loaded.Path!);
+            var targetPath = ToAbsolutePath(outputPath ?? loaded.Path!);
             var validationReport = validation.Validate(canonical, ValidationLevel.Full);
 
             var diagnostics = refined.Diagnostics.Concat(validationReport.Diagnostics).ToList();
+            var meetsTarget = refined.FinalScore >= boundedTarget;
+            var hasBlocking = validationReport.BlockingCount > 0;
+            if (hasBlocking || !meetsTarget)
+            {
+                return new ToolResult
+                {
+                    Ok = false,
+                    Message = hasBlocking
+                        ? "Auto layout refinement blocked by validation errors."
+                        : "Auto layout refinement did not reach target score.",
+                    ReportPath = targetPath,
+                    Diagnostics = diagnostics,
+                    Artifacts = BuildArtifacts(targetPath, hash, createdBy, new
+                    {
+                        refined.InitialScore,
+                        refined.FinalScore,
+                        TargetScore = boundedTarget,
+                        refined.IterationsApplied,
+                        refined.Iterations,
+                        autoRefineBlocked = true
+                    })
+                };
+            }
+
+            targetPath = WriteReport(canonical, targetPath);
             return new ToolResult
             {
-                Ok = validationReport.BlockingCount == 0 && refined.FinalScore >= boundedTarget,
+                Ok = true,
                 Message = "Auto layout refinement completed.",
                 ReportPath = targetPath,
                 Diagnostics = diagnostics,
@@ -685,6 +710,12 @@ public sealed class ReportTools
         string mode)
     {
         var tempPath = BuildTempSiblingPath(targetPath);
+        var directory = Path.GetDirectoryName(tempPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
         File.WriteAllText(tempPath, candidateRdlx);
 
         try
