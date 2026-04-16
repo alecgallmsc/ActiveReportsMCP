@@ -19,6 +19,41 @@ dotnet build
 dotnet run --project .\RdlxMcpServer.csproj
 ```
 
+## Client Configuration
+
+### Codex (`config.toml`)
+
+Add an MCP server entry that starts this project over stdio:
+
+```toml
+[mcp_servers.activereports]
+command = "dotnet"
+args = ["run", "--project", "C:/Repos/RdlxMcpServer/RdlxMcpServer.csproj"]
+```
+
+If your checkout path differs, update the project path in `args`.
+
+### OpenCode (MCP settings)
+
+Add the same server in your OpenCode MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "activereports": {
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "C:/Repos/RdlxMcpServer/RdlxMcpServer.csproj"
+      ]
+    }
+  }
+}
+```
+
+If your OpenCode setup supports an explicit working directory field, set it to `C:/Repos/RdlxMcpServer`.
+
 ## Self-test
 
 ```powershell
