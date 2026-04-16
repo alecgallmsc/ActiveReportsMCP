@@ -27,12 +27,31 @@ public sealed class ReportTools
 
             var canonical = documents.Canonicalize(baseRdlx);
             var hash = RdlxDocumentService.ComputeHash(canonical);
-            var reportPath = WriteReport(canonical, outputPath);
+            var reportPath = ToAbsolutePath(outputPath);
             var report = validation.Validate(canonical, ValidationLevel.Full);
+            if (report.BlockingCount > 0)
+            {
+                return new ToolResult
+                {
+                    Ok = false,
+                    Message = "Report creation blocked by validation errors.",
+                    ReportPath = reportPath,
+                    Diagnostics = report.Diagnostics,
+                    Artifacts = BuildArtifacts(reportPath, hash, createdBy, new
+                    {
+                        report.BlockingCount,
+                        report.WarningsCount,
+                        report.ConfidenceScore,
+                        createBlocked = true
+                    })
+                };
+            }
+
+            reportPath = WriteReport(canonical, reportPath);
 
             return new ToolResult
             {
-                Ok = report.BlockingCount == 0,
+                Ok = true,
                 Message = "Report created.",
                 ReportPath = reportPath,
                 Diagnostics = report.Diagnostics,
@@ -236,13 +255,22 @@ public sealed class ReportTools
         RdlxDocumentService documents,
         RdlxValidationService validation,
         LayoutIntelligenceService layoutIntelligence,
-        [Description("Absolute or relative .rdlx path.")] string reportPath,
+        [Description("Absolute or relative .rdlx path.")] string? reportPath = null,
         [Description("Maximum refinement iterations.")] int maxIterations = 3,
         [Description("Target layout score threshold.")] int targetScore = 80,
         [Description("Optional output .rdlx path. Defaults to in-place overwrite.")] string? outputPath = null,
-        [Description("Author or actor identifier for audit trail.")] string createdBy = "mcp-user")
+        [Description("Author or actor identifier for audit trail.")] string createdBy = "mcp-user",
+        [Description("Legacy report identifier (deprecated). If reportPath is not provided and this value resolves to an existing file path, it will be used as reportPath.")] string? reportId = null,
+        [Description("Legacy base version identifier (deprecated, ignored in path-based mode).")]
+        string? baseVersionId = null)
     {
-        var loaded = TryLoadReport(reportPath);
+        var resolvedPath = ResolveAutoRefinePath(reportPath, reportId, baseVersionId);
+        if (!resolvedPath.Ok)
+        {
+            return resolvedPath.Result;
+        }
+
+        var loaded = TryLoadReport(resolvedPath.Path!);
         if (!loaded.Ok)
         {
             return loaded.Result;
@@ -259,7 +287,10 @@ public sealed class ReportTools
             var targetPath = ToAbsolutePath(outputPath ?? loaded.Path!);
             var validationReport = validation.Validate(canonical, ValidationLevel.Full);
 
-            var diagnostics = refined.Diagnostics.Concat(validationReport.Diagnostics).ToList();
+            var diagnostics = resolvedPath.Result.Diagnostics
+                .Concat(refined.Diagnostics)
+                .Concat(validationReport.Diagnostics)
+                .ToList();
             var meetsTarget = refined.FinalScore >= boundedTarget;
             var hasBlocking = validationReport.BlockingCount > 0;
             if (hasBlocking || !meetsTarget)
@@ -683,14 +714,7 @@ public sealed class ReportTools
 
         try
         {
-            if (File.Exists(absolutePath))
-            {
-                File.Replace(tempPath, absolutePath, null, ignoreMetadataErrors: true);
-            }
-            else
-            {
-                File.Move(tempPath, absolutePath);
-            }
+            File.Move(tempPath, absolutePath, overwrite: true);
         }
         finally
         {
@@ -743,14 +767,67 @@ public sealed class ReportTools
         return Path.Combine(directory, $".{fileName}.{Guid.NewGuid():N}.tmp");
     }
 
+    private static (bool Ok, ToolResult Result, string? Path) ResolveAutoRefinePath(string? reportPath, string? reportId, string? baseVersionId)
+    {
+        if (!string.IsNullOrWhiteSpace(reportPath))
+        {
+            return (true, SuccessShell(ToAbsolutePath(reportPath)), reportPath);
+        }
+
+        if (string.IsNullOrWhiteSpace(reportId))
+        {
+            return (false, ErrorResult(reportPath, "Either reportPath or legacy reportId must be provided.", "MISSING_REPORT_PATH"), null);
+        }
+
+        var candidatePath = ToAbsolutePath(reportId);
+        if (File.Exists(candidatePath))
+        {
+            var diagnostics = new List<DiagnosticEntry>
+            {
+                new()
+                {
+                    Stage = "tool",
+                    Severity = "Warning",
+                    Code = "LEGACY_ARGS_DEPRECATED",
+                    Message = "reportId/baseVersionId arguments are deprecated. Use reportPath instead."
+                }
+            };
+
+            return (true, new ToolResult
+            {
+                Ok = true,
+                ReportPath = candidatePath,
+                Diagnostics = diagnostics
+            }, candidatePath);
+        }
+
+        var message = "Legacy reportId does not map to a local .rdlx path in stateless mode. Pass reportPath explicitly.";
+        return (false, new ToolResult
+        {
+            Ok = false,
+            Message = message,
+            ReportPath = null,
+            Diagnostics =
+            [
+                new DiagnosticEntry
+                {
+                    Stage = "tool",
+                    Severity = "Error",
+                    Code = "LEGACY_ARGS_UNSUPPORTED",
+                    Message = message,
+                    Owner = string.IsNullOrWhiteSpace(baseVersionId) ? null : $"baseVersionId={baseVersionId}"
+                }
+            ]
+        }, null);
+    }
+
     private static Dictionary<string, object?> BuildArtifacts(string reportPath, string canonicalHash, string createdBy, object? extra = null)
     {
         var artifacts = new Dictionary<string, object?>
         {
             ["filePath"] = reportPath,
             ["canonicalHash"] = canonicalHash,
-            ["createdBy"] = createdBy,
-            ["savedAtUtc"] = DateTimeOffset.UtcNow
+            ["createdBy"] = createdBy
         };
 
         if (extra is not null)
