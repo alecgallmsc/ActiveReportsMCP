@@ -703,6 +703,7 @@ public sealed class SchemaInspectionService
     private static Dictionary<string, List<ColumnMeta>> ExtractColumns(DataTable columnRows)
     {
         var columnsByTable = new Dictionary<string, List<ColumnMeta>>(StringComparer.OrdinalIgnoreCase);
+        var keysByTableName = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (DataRow row in columnRows.Rows)
         {
@@ -721,6 +722,14 @@ public sealed class SchemaInspectionService
                 columnsByTable[key] = columns;
             }
 
+            if (!keysByTableName.TryGetValue(tableName, out var fullKeys))
+            {
+                fullKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                keysByTableName[tableName] = fullKeys;
+            }
+
+            fullKeys.Add(key);
+
             columns.Add(new ColumnMeta(
                 ColumnName: columnName,
                 TypeName: ReadString(row, "TYPE_NAME", "type_name"),
@@ -730,6 +739,20 @@ public sealed class SchemaInspectionService
                 MaxLength: ReadInt(row, "CHARACTER_MAXIMUM_LENGTH", "character_maximum_length", "COLUMN_SIZE", "column_size"),
                 NumericPrecision: ReadInt(row, "NUMERIC_PRECISION", "numeric_precision"),
                 NumericScale: ReadInt(row, "NUMERIC_SCALE", "numeric_scale")));
+        }
+
+        foreach (var (tableName, keys) in keysByTableName)
+        {
+            if (columnsByTable.ContainsKey(tableName) || keys.Count != 1)
+            {
+                continue;
+            }
+
+            var fullKey = keys.First();
+            if (columnsByTable.TryGetValue(fullKey, out var resolvedColumns))
+            {
+                columnsByTable[tableName] = resolvedColumns;
+            }
         }
 
         return columnsByTable;
@@ -840,7 +863,7 @@ public sealed class SchemaInspectionService
 
         if (string.IsNullOrWhiteSpace(schemaName))
         {
-            return key.EndsWith($".{tableName}", StringComparison.OrdinalIgnoreCase);
+            return false;
         }
 
         return string.Equals(key, BuildKey(schemaName, tableName), StringComparison.OrdinalIgnoreCase)
