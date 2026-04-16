@@ -84,7 +84,6 @@ Primary goals:
 
 ## MCP Contract Safety Rules
 
-- Do not remove/rename existing tools without a migration plan.
 - New tool parameters should be additive and optional when possible.
 - Keep response envelope shape stable (`ok`, `message`, `diagnostics`, `artifacts`, etc.).
 
