@@ -119,7 +119,7 @@ public sealed partial class LayoutIntelligenceService
         var controls = root
             .Descendants()
             .Where(e => e.Attribute("Name") is not null
-                && (e.Name.LocalName is "Textbox" or "Table" or "Tablix" or "Rectangle" or "Image"))
+                && (e.Name.LocalName is "Textbox" or "Table" or "Tablix" or "Chart" or "Rectangle" or "Image"))
             .Select(e => new LayoutModelControl
             {
                 Ref = $"{e.Name.LocalName.ToLowerInvariant()}:{e.Attribute("Name")!.Value}",

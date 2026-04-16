@@ -38,12 +38,24 @@ Self-test output is written to:
 ## Core MCP Tool Areas
 
 - Report lifecycle: create, structure, diff, canonical save
-- Layout/data patching: tables/tablix/textboxes, dataset/data source updates
+- Layout/data patching: tables/tablix/charts/textboxes, dataset/data source updates
 - Style/formatting: style patching and style-only format application
 - Validation: parse/schema/lint + optional runtime verification
 - Layout intelligence: model extraction, scoring, deterministic auto-refine
 
+### `add_chart` layout op (via `report_patch_layout`)
+
+Use `op="add_chart"` with `valueExpression` options:
+
+- `dataset=InvoiceData`
+- `category=CustomerName`
+- `values=TotalAmount,TaxAmount`
+- `chartType=Column|Bar|Line|Area|Pie|Doughnut|Scatter|Bubble|Stock`
+- `aggregate=Sum|Avg|Min|Max|Count|CountDistinct|First|Last`
+- optional `series=Region`, `legend=true|false`, `palette=Default`, `title=...`
+
 ## Notes
 
-- Default artifact storage path is configurable via `RDLX_STORE_PATH`.
+- The MCP server is path-based and stateless across tool calls.
+- Reports are read/written only at explicit user-provided local file paths.
 - See `AGENTS.md` for contributor standards and C# best practices.
