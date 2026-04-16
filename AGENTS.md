@@ -22,7 +22,6 @@ Primary goals:
   - `LayoutIntelligenceService.cs`: style/format/layout scoring/refinement
   - `RdlxValidationService.cs`: parse/schema/lint checks
   - `RuntimeVerificationService.cs`: ActiveReports API verification path
-  - `ReportStore.cs`: local versioned artifact store
   - `SelfTestRunner.cs`: deterministic end-to-end smoke flow
 - `Models/Contracts.cs`: tool DTOs and response models.
 - `scripts/`: local helper scripts (self-test wrapper).
@@ -31,8 +30,8 @@ Primary goals:
 
 1. Keep MCP tools semantic and typed; avoid raw XML rewrite tools.
 2. Prefer deterministic transforms over heuristic free-form edits.
-3. Preserve existing tool names/arguments unless versioning is explicit.
-4. Keep write operations atomic per report version.
+3. Keep tools path-based and stateless; never rely on server-side report IDs.
+4. Keep write operations atomic per output file path.
 5. Return actionable diagnostics for all recoverable failures.
 
 ## C# Coding Standards
@@ -78,7 +77,8 @@ Primary goals:
 
 ## Security and Privacy
 
-- Default to local artifact storage.
+- Default to stateless operation over explicit local report paths.
+- Do not persist user report data on the server between calls.
 - Never log connection-string secrets in plain text diagnostics.
 - Do not add remote calls for report content without explicit requirement.
 

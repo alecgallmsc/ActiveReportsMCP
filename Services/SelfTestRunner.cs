@@ -7,7 +7,6 @@ namespace RdlxMcpServer.Services;
 
 public sealed class SelfTestRunner
 {
-    private readonly ReportStore _store;
     private readonly RdlxDocumentService _documents;
     private readonly RdlxValidationService _validation;
     private readonly RuntimeVerificationService _runtime;
@@ -15,14 +14,12 @@ public sealed class SelfTestRunner
     private readonly ILogger<SelfTestRunner> _logger;
 
     public SelfTestRunner(
-        ReportStore store,
         RdlxDocumentService documents,
         RdlxValidationService validation,
         RuntimeVerificationService runtime,
         LayoutIntelligenceService layoutIntelligence,
         ILogger<SelfTestRunner> logger)
     {
-        _store = store;
         _documents = documents;
         _validation = validation;
         _runtime = runtime;
@@ -36,14 +33,14 @@ public sealed class SelfTestRunner
         cancellationToken.ThrowIfCancellationRequested();
 
         var events = new List<object>();
+        var reportPath = Path.Combine(AppContext.BaseDirectory, "data", "self-test", "report.rdlx");
 
         var create = ReportTools.report_create(
-            _store,
             _documents,
             _validation,
             name: "PoC_Invoice_SelfTest",
+            outputPath: reportPath,
             reportType: "PageReport",
-            templatePath: null,
             pageSettings: new Dictionary<string, string>
             {
                 ["PageWidth"] = "8.5in",
@@ -52,18 +49,16 @@ public sealed class SelfTestRunner
             },
             createdBy: "self-test");
 
-        events.Add(new { step = "report_create", create.Ok, create.Message, create.ReportId, create.VersionId });
-        if (!create.Ok || string.IsNullOrWhiteSpace(create.ReportId) || string.IsNullOrWhiteSpace(create.VersionId))
+        events.Add(new { step = "report_create", create.Ok, create.Message, create.ReportPath });
+        if (!create.Ok || string.IsNullOrWhiteSpace(create.ReportPath))
         {
             return PersistAndExit(events, 1);
         }
 
         var patchData = ReportTools.report_patch_data(
-            _store,
             _documents,
             _validation,
-            reportId: create.ReportId,
-            baseVersionId: create.VersionId,
+            reportPath: create.ReportPath,
             dataOps:
             [
                 new DataOperation
@@ -84,18 +79,16 @@ public sealed class SelfTestRunner
             ],
             createdBy: "self-test");
 
-        events.Add(new { step = "report_patch_data", patchData.Ok, patchData.Message, patchData.VersionId });
-        if (!patchData.Ok || string.IsNullOrWhiteSpace(patchData.VersionId))
+        events.Add(new { step = "report_patch_data", patchData.Ok, patchData.Message, patchData.ReportPath });
+        if (!patchData.Ok || string.IsNullOrWhiteSpace(patchData.ReportPath))
         {
             return PersistAndExit(events, 2);
         }
 
         var patchLayout = ReportTools.report_patch_layout(
-            _store,
             _documents,
             _validation,
-            reportId: create.ReportId,
-            baseVersionId: patchData.VersionId,
+            reportPath: patchData.ReportPath,
             operations:
             [
                 new LayoutOperation
@@ -107,27 +100,36 @@ public sealed class SelfTestRunner
                     Width = "6.8in",
                     Height = "2.0in",
                     ValueExpression = "dataset=InvoiceData;groupBy=CustomerName;columns=InvoiceId,CustomerName,TotalAmount"
+                },
+                new LayoutOperation
+                {
+                    Op = "add_chart",
+                    Name = "chtInvoiceTotals",
+                    X = "0.2in",
+                    Y = "3.1in",
+                    Width = "6.8in",
+                    Height = "2.4in",
+                    ValueExpression = "dataset=InvoiceData;chartType=Column;category=CustomerName;values=TotalAmount;aggregate=Sum;title=Invoice Totals by Customer"
                 }
             ],
             createdBy: "self-test");
 
-        events.Add(new { step = "report_patch_layout", patchLayout.Ok, patchLayout.Message, patchLayout.VersionId });
-        if (!patchLayout.Ok || string.IsNullOrWhiteSpace(patchLayout.VersionId))
+        events.Add(new { step = "report_patch_layout", patchLayout.Ok, patchLayout.Message, patchLayout.ReportPath });
+        if (!patchLayout.Ok || string.IsNullOrWhiteSpace(patchLayout.ReportPath))
         {
             return PersistAndExit(events, 3);
         }
 
         var patchStyle = ReportTools.report_patch_style(
-            _store,
             _documents,
             _validation,
             _layoutIntelligence,
-            reportId: create.ReportId,
-            baseVersionId: patchLayout.VersionId,
+            reportPath: patchLayout.ReportPath,
             targets:
             [
                 new StyleTarget { TargetRef = "textbox:txtTitle" },
-                new StyleTarget { Selector = "type:Table" }
+                new StyleTarget { Selector = "type:Table" },
+                new StyleTarget { Selector = "type:Chart" }
             ],
             styleOps:
             [
@@ -137,44 +139,38 @@ public sealed class SelfTestRunner
             ],
             createdBy: "self-test");
 
-        events.Add(new { step = "report_patch_style", patchStyle.Ok, patchStyle.Message, patchStyle.VersionId });
-        if (!patchStyle.Ok || string.IsNullOrWhiteSpace(patchStyle.VersionId))
+        events.Add(new { step = "report_patch_style", patchStyle.Ok, patchStyle.Message, patchStyle.ReportPath });
+        if (!patchStyle.Ok || string.IsNullOrWhiteSpace(patchStyle.ReportPath))
         {
             return PersistAndExit(events, 31);
         }
 
         var patchFormatting = ReportTools.report_patch_formatting(
-            _store,
             _documents,
             _validation,
             _layoutIntelligence,
-            reportId: create.ReportId,
-            baseVersionId: patchStyle.VersionId,
+            reportPath: patchStyle.ReportPath,
             formatRules:
             [
                 new FormatRule { FieldRef = "TotalAmount", FormatString = "C2", Locale = "en-US", NullDisplay = "N/A" }
             ],
             createdBy: "self-test");
 
-        events.Add(new { step = "report_patch_formatting", patchFormatting.Ok, patchFormatting.Message, patchFormatting.VersionId });
-        if (!patchFormatting.Ok || string.IsNullOrWhiteSpace(patchFormatting.VersionId))
+        events.Add(new { step = "report_patch_formatting", patchFormatting.Ok, patchFormatting.Message, patchFormatting.ReportPath });
+        if (!patchFormatting.Ok || string.IsNullOrWhiteSpace(patchFormatting.ReportPath))
         {
             return PersistAndExit(events, 32);
         }
 
         var layoutModel = ReportTools.report_extract_layout_model(
-            _store,
             _layoutIntelligence,
-            reportId: create.ReportId,
-            versionId: patchFormatting.VersionId);
+            reportPath: patchFormatting.ReportPath);
 
         events.Add(new { step = "report_extract_layout_model", layoutModel.Ok, layoutModel.Message });
 
         var layoutScore = ReportTools.report_layout_score(
-            _store,
             _layoutIntelligence,
-            reportId: create.ReportId,
-            versionId: patchFormatting.VersionId,
+            reportPath: patchFormatting.ReportPath,
             rulePackVersion: "layout-v1.1");
 
         events.Add(new
@@ -186,28 +182,24 @@ public sealed class SelfTestRunner
         });
 
         var refine = ReportTools.report_auto_refine_layout(
-            _store,
             _documents,
             _validation,
             _layoutIntelligence,
-            reportId: create.ReportId,
-            baseVersionId: patchFormatting.VersionId,
+            reportPath: patchFormatting.ReportPath,
             maxIterations: 2,
             targetScore: 75,
             createdBy: "self-test");
 
-        events.Add(new { step = "report_auto_refine_layout", refine.Ok, refine.Message, refine.VersionId });
-        if (!refine.Ok || string.IsNullOrWhiteSpace(refine.VersionId))
+        events.Add(new { step = "report_auto_refine_layout", refine.Ok, refine.Message, refine.ReportPath });
+        if (!refine.Ok || string.IsNullOrWhiteSpace(refine.ReportPath))
         {
             return PersistAndExit(events, 33);
         }
 
         var validate = ReportTools.report_validate(
-            _store,
             _validation,
             _runtime,
-            reportId: create.ReportId,
-            versionId: refine.VersionId,
+            reportPath: refine.ReportPath,
             validationLevel: "full",
             includeRuntime: includeRuntimeChecks);
 
@@ -222,10 +214,8 @@ public sealed class SelfTestRunner
         if (includeRuntimeChecks)
         {
             var runtime = ReportTools.report_runtime_verify(
-                _store,
                 _runtime,
-                reportId: create.ReportId,
-                versionId: refine.VersionId,
+                reportPath: refine.ReportPath,
                 mode: "validate");
 
             events.Add(new
@@ -238,31 +228,26 @@ public sealed class SelfTestRunner
         }
 
         var save = ReportTools.report_save_canonical(
-            _store,
             _documents,
             _validation,
             _runtime,
-            reportId: create.ReportId,
-            versionId: refine.VersionId,
+            reportPath: refine.ReportPath,
             saveComment: "self-test canonical save",
             includeRuntime: false,
             createdBy: "self-test");
 
-        events.Add(new { step = "report_save_canonical", save.Ok, save.Message, save.VersionId });
-        if (!save.Ok)
+        events.Add(new { step = "report_save_canonical", save.Ok, save.Message, save.ReportPath });
+        if (!save.Ok || string.IsNullOrWhiteSpace(save.ReportPath))
         {
             return PersistAndExit(events, 4);
         }
 
         var handoff = ReportTools.report_handoff_summary(
-            _store,
             _validation,
             _runtime,
-            reportId: create.ReportId,
-            versionId: save.VersionId ?? refine.VersionId);
+            reportPath: save.ReportPath);
 
         events.Add(new { step = "report_handoff_summary", handoff.Ok, handoff.Message });
-
         return PersistAndExit(events, 0);
     }
 

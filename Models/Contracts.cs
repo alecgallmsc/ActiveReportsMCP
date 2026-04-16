@@ -10,11 +10,8 @@ public sealed class ToolResult
     [JsonPropertyName("message")]
     public string? Message { get; init; }
 
-    [JsonPropertyName("reportId")]
-    public string? ReportId { get; init; }
-
-    [JsonPropertyName("versionId")]
-    public string? VersionId { get; init; }
+    [JsonPropertyName("reportPath")]
+    public string? ReportPath { get; init; }
 
     [JsonPropertyName("diagnostics")]
     public List<DiagnosticEntry> Diagnostics { get; init; } = [];
@@ -181,28 +178,6 @@ public sealed class AutoRefineResult
     public required int IterationsApplied { get; init; }
     public List<object> Iterations { get; init; } = [];
     public List<DiagnosticEntry> Diagnostics { get; init; } = [];
-}
-
-public sealed class ReportVersionRecord
-{
-    public required string VersionId { get; init; }
-    public required string Rdlx { get; init; }
-    public required string CanonicalHash { get; init; }
-    public required DateTimeOffset CreatedAtUtc { get; init; }
-    public required string CreatedBy { get; init; }
-    public required string Reason { get; init; }
-    public bool IsSaved { get; set; }
-    public string? SaveComment { get; set; }
-}
-
-public sealed class ReportRecord
-{
-    public required string ReportId { get; init; }
-    public required string Name { get; init; }
-    public required string ReportType { get; init; }
-    public int NextVersion { get; set; }
-    public Dictionary<string, ReportVersionRecord> Versions { get; } = new(StringComparer.OrdinalIgnoreCase);
-    public object SyncRoot { get; } = new();
 }
 
 public enum ValidationLevel
