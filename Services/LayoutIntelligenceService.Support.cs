@@ -119,8 +119,16 @@ public sealed partial class LayoutIntelligenceService
             return false;
         }
 
-        formatted = "=" + string.Join(" & ", terms);
+        formatted = EnsureSingleLeadingEquals(string.Join(" & ", terms));
         return true;
+    }
+
+    private static string EnsureSingleLeadingEquals(string expression)
+    {
+        var trimmed = expression.TrimStart();
+        return trimmed.StartsWith('=')
+            ? trimmed
+            : "=" + trimmed;
     }
 
     private static bool TryRewriteConcatenatedTerm(string rawTerm, string fieldName, string formatString, bool isFirstTerm, out string rewritten)
