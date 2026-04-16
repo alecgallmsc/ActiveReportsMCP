@@ -15,7 +15,7 @@ builder.Services.AddSingleton<RdlxDocumentService>();
 builder.Services.AddSingleton<RdlxValidationService>();
 builder.Services.AddSingleton<RuntimeVerificationService>();
 builder.Services.AddSingleton<LayoutIntelligenceService>();
-builder.Services.AddSingleton<ReportStore>();
+builder.Services.AddSingleton<SchemaInspectionService>();
 builder.Services.AddSingleton<SelfTestRunner>();
 
 builder.Logging.ClearProviders();

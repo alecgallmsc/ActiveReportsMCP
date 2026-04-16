@@ -80,6 +80,9 @@ public sealed partial class RdlxDocumentService
                 case "add_tablix":
                     AddTablix(root, reportItems, op, diagnostics);
                     break;
+                case "add_chart":
+                    AddChart(root, reportItems, op, diagnostics);
+                    break;
                 default:
                     diagnostics.Add(new DiagnosticEntry
                     {
@@ -419,6 +422,436 @@ public sealed partial class RdlxDocumentService
         var tablix = BuildTablix(root, ns, tableName, datasetName, columns, groupBy, op, diagnostics, options);
         reportItems.Add(tablix);
         EnsureBodyHeight(root, tablix.Element(ns + "Top")?.Value, tablix.Element(ns + "Height")?.Value);
+    }
+
+    private static void AddChart(XElement? root, XElement reportItems, LayoutOperation op, List<DiagnosticEntry> diagnostics)
+    {
+        if (root is null)
+        {
+            throw new InvalidOperationException("Invalid RDLX: missing root element.");
+        }
+
+        var ns = reportItems.Name.Namespace;
+        var options = ParseOperationOptions(op.ValueExpression);
+        var chartName = NormalizeName(op.Name, $"cht_{Guid.NewGuid().ToString("N")[..8]}");
+
+        if (reportItems.Elements().Any(x => string.Equals(x.Attribute("Name")?.Value, chartName, StringComparison.OrdinalIgnoreCase)))
+        {
+            chartName = $"{chartName}_{Guid.NewGuid().ToString("N")[..4]}";
+        }
+
+        var datasetName = ResolveDataSetName(root, ns, options);
+        if (datasetName is null)
+        {
+            diagnostics.Add(new DiagnosticEntry
+            {
+                Stage = "schema",
+                Severity = "Error",
+                Code = "DATASET_NOT_FOUND",
+                Message = "No dataset found for add_chart operation. Provide dataset=<DataSetName> in valueExpression.",
+                Owner = chartName
+            });
+            return;
+        }
+
+        var columns = ResolveColumns(root, ns, datasetName, options);
+        if (columns.Count == 0)
+        {
+            diagnostics.Add(new DiagnosticEntry
+            {
+                Stage = "schema",
+                Severity = "Error",
+                Code = "COLUMNS_NOT_FOUND",
+                Message = "No columns found for add_chart operation.",
+                Owner = chartName
+            });
+            return;
+        }
+
+        var requestedType = GetOption(options, "chartType", "type");
+        var chartType = ResolveChartType(requestedType);
+        if (!string.IsNullOrWhiteSpace(requestedType)
+            && !string.Equals(chartType, requestedType, StringComparison.OrdinalIgnoreCase))
+        {
+            diagnostics.Add(new DiagnosticEntry
+            {
+                Stage = "lint",
+                Severity = "Warning",
+                Code = "CHART_TYPE_NORMALIZED",
+                Message = $"Chart type '{requestedType}' was normalized to '{chartType}'.",
+                Owner = chartName
+            });
+        }
+
+        var aggregateFunction = ResolveAggregateFunction(GetOption(options, "aggregate", "agg"));
+        var bindings = ResolveChartValueBindings(columns, options, aggregateFunction, diagnostics, chartName);
+        if (bindings.Count == 0)
+        {
+            diagnostics.Add(new DiagnosticEntry
+            {
+                Stage = "schema",
+                Severity = "Error",
+                Code = "CHART_VALUES_NOT_FOUND",
+                Message = "No chart value bindings could be resolved.",
+                Owner = chartName
+            });
+            return;
+        }
+
+        var seriesExpression = ResolveChartSeriesExpression(options);
+        if (!string.IsNullOrWhiteSpace(seriesExpression) && bindings.Count > 1)
+        {
+            diagnostics.Add(new DiagnosticEntry
+            {
+                Stage = "lint",
+                Severity = "Warning",
+                Code = "CHART_DYNAMIC_SERIES_MULTI_VALUE",
+                Message = "Dynamic series grouping only supports one value expression. Using the first configured value.",
+                Owner = chartName
+            });
+            bindings = [bindings[0]];
+        }
+
+        var categoryExpression = ResolveChartCategoryExpression(columns, bindings, options, diagnostics, chartName);
+        var legendVisible = ParseBooleanOption(GetOption(options, "legend", "showLegend"), fallback: true);
+        var palette = GetOption(options, "palette") ?? "Default";
+
+        var fit = GetPrintableFitBounds(root, options);
+        var requestedWidth = ParseMeasurementAsInches(op.Width) ?? 4.8;
+        var chartWidth = fit.AvailableWidth is > 0
+            ? Math.Min(requestedWidth, fit.AvailableWidth.Value)
+            : requestedWidth;
+
+        var chart = BuildChart(
+            root,
+            ns,
+            chartName,
+            datasetName,
+            chartType,
+            categoryExpression,
+            seriesExpression,
+            bindings,
+            legendVisible,
+            palette,
+            op,
+            chartWidth,
+            diagnostics,
+            options);
+
+        reportItems.Add(chart);
+        EnsureBodyHeight(root, chart.Element(ns + "Top")?.Value, chart.Element(ns + "Height")?.Value);
+    }
+
+    private static XElement BuildChart(
+        XElement root,
+        XNamespace ns,
+        string chartName,
+        string dataSetName,
+        string chartType,
+        string categoryExpression,
+        string? seriesExpression,
+        IReadOnlyList<(string Label, string ValueExpression)> bindings,
+        bool legendVisible,
+        string palette,
+        LayoutOperation op,
+        double chartWidth,
+        List<DiagnosticEntry> diagnostics,
+        IReadOnlyDictionary<string, string> options)
+    {
+        var top = op.Y ?? "1.2in";
+        var left = op.X ?? "0.2in";
+        var height = string.IsNullOrWhiteSpace(op.Height) ? "2.4in" : op.Height;
+
+        var chartData = new XElement(ns + "ChartData",
+            bindings.Select(binding =>
+                new XElement(ns + "ChartSeries",
+                    new XElement(ns + "DataPoints",
+                        new XElement(ns + "DataPoint",
+                            new XElement(ns + "DataLabel"),
+                            new XElement(ns + "DataValues",
+                                new XElement(ns + "DataValue",
+                                    new XElement(ns + "Value", binding.ValueExpression))),
+                            new XElement(ns + "Marker"))))));
+
+        XElement seriesGroupings;
+        if (string.IsNullOrWhiteSpace(seriesExpression))
+        {
+            seriesGroupings = new XElement(ns + "SeriesGroupings",
+                new XElement(ns + "SeriesGrouping",
+                    new XElement(ns + "StaticSeries",
+                        bindings.Select(binding =>
+                            new XElement(ns + "StaticMember",
+                                new XElement(ns + "Label", binding.Label))))));
+        }
+        else
+        {
+            var seriesField = DeriveFieldNameFromExpression(seriesExpression) ?? "Series";
+            seriesGroupings = new XElement(ns + "SeriesGroupings",
+                new XElement(ns + "SeriesGrouping",
+                    new XElement(ns + "DynamicSeries",
+                        new XElement(ns + "Grouping",
+                            new XAttribute("Name", NormalizeName($"{chartName}_{seriesField}_SeriesGroup", "SeriesGroup")),
+                            new XElement(ns + "GroupExpressions",
+                                new XElement(ns + "GroupExpression", seriesExpression)),
+                            new XElement(ns + "Label", seriesExpression)),
+                        new XElement(ns + "Label", seriesExpression))));
+        }
+
+        var title = GetOption(options, "title");
+        var chart = new XElement(ns + "Chart",
+            new XAttribute("Name", chartName),
+            new XElement(ns + "CategoryAxis",
+                new XElement(ns + "Axis",
+                    new XElement(ns + "Title"),
+                    new XElement(ns + "Visible", "true"))),
+            new XElement(ns + "CategoryGroupings",
+                new XElement(ns + "CategoryGrouping",
+                    new XElement(ns + "DynamicCategories",
+                        new XElement(ns + "Grouping",
+                            new XAttribute("Name", NormalizeName($"{chartName}_CategoryGroup", "CategoryGroup")),
+                            new XElement(ns + "GroupExpressions",
+                                new XElement(ns + "GroupExpression", categoryExpression)),
+                            new XElement(ns + "Label", categoryExpression)),
+                        new XElement(ns + "Label", categoryExpression)))),
+            chartData,
+            new XElement(ns + "Top", top),
+            new XElement(ns + "Left", left),
+            new XElement(ns + "Width", FormatInches(chartWidth)),
+            new XElement(ns + "Height", height),
+            new XElement(ns + "DataSetName", dataSetName),
+            new XElement(ns + "Legend",
+                new XElement(ns + "Position", "RightCenter"),
+                new XElement(ns + "Visible", legendVisible ? "true" : "false")),
+            new XElement(ns + "Palette", palette),
+            new XElement(ns + "PlotArea",
+                new XElement(ns + "Style",
+                    new XElement(ns + "BackgroundColor", "Transparent"))),
+            seriesGroupings,
+            new XElement(ns + "Subtype", "Plain"),
+            new XElement(ns + "Title",
+                new XElement(ns + "Caption", string.IsNullOrWhiteSpace(title) ? "" : title),
+                new XElement(ns + "Style",
+                    new XElement(ns + "FontSize", "9pt"),
+                    new XElement(ns + "TextAlign", "Center"))),
+            new XElement(ns + "Type", chartType),
+            new XElement(ns + "ValueAxis",
+                new XElement(ns + "Axis",
+                    new XElement(ns + "Title"),
+                    new XElement(ns + "Visible", "true"))),
+            new XElement(ns + "Style",
+                new XElement(ns + "FontFamily", "Arial"),
+                new XElement(ns + "FontSize", "9pt")));
+
+        EnsureFitsPrintableWidth(root, chart, diagnostics, chartName, options);
+        return chart;
+    }
+
+    private static List<(string Label, string ValueExpression)> ResolveChartValueBindings(
+        IReadOnlyList<string> columns,
+        IReadOnlyDictionary<string, string> options,
+        string aggregateFunction,
+        List<DiagnosticEntry> diagnostics,
+        string owner)
+    {
+        var configured = GetOption(options, "values", "value");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var bindings = configured
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select((token, index) => BuildChartBindingFromToken(token, aggregateFunction, index + 1))
+                .Where(binding => !string.IsNullOrWhiteSpace(binding.ValueExpression))
+                .DistinctBy(binding => binding.Label, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (bindings.Count > 0)
+            {
+                return bindings;
+            }
+        }
+
+        var numericCandidates = columns.Where(LooksNumericFieldName).ToList();
+        var fallbackColumns = numericCandidates.Count > 0
+            ? numericCandidates
+            : columns.Skip(1).Take(3).ToList();
+
+        if (fallbackColumns.Count == 0 && columns.Count > 0)
+        {
+            fallbackColumns = [columns[0]];
+        }
+
+        var result = fallbackColumns
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(3)
+            .Select((column, index) => BuildChartBindingFromToken(column, aggregateFunction, index + 1))
+            .ToList();
+
+        if (result.Count > 0)
+        {
+            diagnostics.Add(new DiagnosticEntry
+            {
+                Stage = "layout",
+                Severity = "Information",
+                Code = "CHART_VALUES_INFERRED",
+                Message = "Chart value series were inferred from dataset fields.",
+                Owner = owner
+            });
+        }
+
+        return result;
+    }
+
+    private static (string Label, string ValueExpression) BuildChartBindingFromToken(string token, string aggregateFunction, int index)
+    {
+        var trimmed = token.Trim();
+        if (trimmed.StartsWith('='))
+        {
+            var labelFromExpression = DeriveFieldNameFromExpression(trimmed);
+            var label = string.IsNullOrWhiteSpace(labelFromExpression)
+                ? $"Series {index}"
+                : TitleizeColumnName(labelFromExpression);
+            return (label, trimmed);
+        }
+
+        var fieldName = NormalizeName(trimmed, $"Value{index}");
+        return (TitleizeColumnName(fieldName), BuildAggregateFieldExpression(fieldName, aggregateFunction));
+    }
+
+    private static string ResolveChartCategoryExpression(
+        IReadOnlyList<string> columns,
+        IReadOnlyList<(string Label, string ValueExpression)> bindings,
+        IReadOnlyDictionary<string, string> options,
+        List<DiagnosticEntry> diagnostics,
+        string owner)
+    {
+        var configuredCategory = GetOption(options, "category", "categories", "categoryField");
+        if (!string.IsNullOrWhiteSpace(configuredCategory))
+        {
+            return AsFieldExpression(configuredCategory, "Category");
+        }
+
+        var valueFields = bindings
+            .Select(binding => DeriveFieldNameFromExpression(binding.ValueExpression))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Cast<string>()
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var categoryField = columns.FirstOrDefault(column => !valueFields.Contains(column))
+            ?? columns.FirstOrDefault()
+            ?? "Category";
+
+        diagnostics.Add(new DiagnosticEntry
+        {
+            Stage = "layout",
+            Severity = "Information",
+            Code = "CHART_CATEGORY_INFERRED",
+            Message = $"Chart category was inferred as '{categoryField}'.",
+            Owner = owner
+        });
+
+        return AsFieldExpression(categoryField, "Category");
+    }
+
+    private static string? ResolveChartSeriesExpression(IReadOnlyDictionary<string, string> options)
+    {
+        var configured = GetOption(options, "series", "seriesGroup", "seriesField");
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return null;
+        }
+
+        return AsFieldExpression(configured, "Series");
+    }
+
+    private static string ResolveChartType(string? chartType)
+    {
+        return chartType?.Trim().ToLowerInvariant() switch
+        {
+            "column" or "clusteredcolumn" => "Column",
+            "bar" => "Bar",
+            "line" => "Line",
+            "area" => "Area",
+            "pie" => "Pie",
+            "doughnut" or "donut" => "Doughnut",
+            "scatter" or "point" => "Scatter",
+            "bubble" => "Bubble",
+            "stock" => "Stock",
+            "" or null => "Column",
+            _ => "Column"
+        };
+    }
+
+    private static string ResolveAggregateFunction(string? aggregate)
+    {
+        return aggregate?.Trim().ToLowerInvariant() switch
+        {
+            "sum" => "Sum",
+            "avg" or "average" => "Avg",
+            "min" => "Min",
+            "max" => "Max",
+            "count" => "Count",
+            "countdistinct" => "CountDistinct",
+            "first" => "First",
+            "last" => "Last",
+            _ => "Sum"
+        };
+    }
+
+    private static bool ParseBooleanOption(string? value, bool fallback)
+    {
+        return value?.Trim().ToLowerInvariant() switch
+        {
+            "true" or "1" or "yes" or "y" => true,
+            "false" or "0" or "no" or "n" => false,
+            _ => fallback
+        };
+    }
+
+    private static string? GetOption(IReadOnlyDictionary<string, string> options, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (options.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+            {
+                return value.Trim();
+            }
+        }
+
+        return null;
+    }
+
+    private static string BuildAggregateFieldExpression(string fieldName, string aggregateFunction)
+    {
+        return $"={aggregateFunction}(Fields!{fieldName}.Value)";
+    }
+
+    private static string AsFieldExpression(string token, string fallbackField)
+    {
+        var trimmed = token.Trim();
+        if (trimmed.StartsWith('='))
+        {
+            return trimmed;
+        }
+
+        var fieldName = NormalizeName(trimmed, fallbackField);
+        return $"=Fields!{fieldName}.Value";
+    }
+
+    private static bool LooksNumericFieldName(string fieldName)
+    {
+        var normalized = fieldName.Trim().ToLowerInvariant();
+        return normalized.Contains("amount", StringComparison.Ordinal)
+            || normalized.Contains("total", StringComparison.Ordinal)
+            || normalized.Contains("price", StringComparison.Ordinal)
+            || normalized.Contains("cost", StringComparison.Ordinal)
+            || normalized.Contains("revenue", StringComparison.Ordinal)
+            || normalized.Contains("sales", StringComparison.Ordinal)
+            || normalized.Contains("qty", StringComparison.Ordinal)
+            || normalized.Contains("quantity", StringComparison.Ordinal)
+            || normalized.Contains("count", StringComparison.Ordinal)
+            || normalized.Contains("score", StringComparison.Ordinal)
+            || normalized.Contains("rate", StringComparison.Ordinal)
+            || normalized.Contains("percent", StringComparison.Ordinal)
+            || normalized.Contains("pct", StringComparison.Ordinal);
     }
 
     private static void UpdateTextboxValue(XElement reportItems, LayoutOperation op, List<DiagnosticEntry> diagnostics)
