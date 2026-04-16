@@ -66,6 +66,100 @@ public sealed partial class LayoutIntelligenceService
             || expression.Contains("$", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool NeedsInlineNumericFormatting(string? expression, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return false;
+        }
+
+        // Only rewrite mixed/labeled expressions where Style.Format cannot format embedded numbers.
+        return expression.Contains('&')
+            && ExpressionReferencesField(expression, fieldName);
+    }
+
+    private static bool ExpressionReferencesField(string expression, string fieldName)
+    {
+        if (expression.Contains($"Fields!{fieldName}.", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var escaped = Regex.Escape(fieldName);
+        return Regex.IsMatch(
+            expression,
+            $"\\b(?:Sum|Avg|Min|Max|Count|CountDistinct|First|Last)\\s*\\(\\s*{escaped}\\s*\\)",
+            RegexOptions.IgnoreCase);
+    }
+
+    private static bool TryApplyInlineNumericFormatting(string expression, string fieldName, string formatString, out string formatted)
+    {
+        formatted = expression;
+        var escapedField = Regex.Escape(fieldName);
+
+        var exprPattern =
+            $"(?<expr>(?:Sum|Avg|Min|Max|Count|CountDistinct|First|Last)\\s*\\(\\s*(?:Fields!{escapedField}\\.Value|{escapedField})\\s*\\)|Fields!{escapedField}\\.Value)";
+
+        var afterRewrite = Regex.Replace(
+            expression,
+            exprPattern,
+            match => WrapWithFormatIfNeeded(expression, match, formatString),
+            RegexOptions.IgnoreCase);
+
+        if (string.Equals(afterRewrite, expression, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        formatted = afterRewrite;
+        return true;
+    }
+
+    private static string WrapWithFormatIfNeeded(string source, Match match, string formatString)
+    {
+        if (IsAlreadyWrappedByFormat(source, match.Index))
+        {
+            return match.Value;
+        }
+
+        var escapedFormat = formatString.Replace("\"", "\"\"");
+        return $"Format({match.Groups["expr"].Value}, \"{escapedFormat}\")";
+    }
+
+    private static bool IsAlreadyWrappedByFormat(string expression, int tokenStart)
+    {
+        var idx = tokenStart - 1;
+        while (idx >= 0 && char.IsWhiteSpace(expression[idx]))
+        {
+            idx--;
+        }
+
+        if (idx < 0 || expression[idx] != '(')
+        {
+            return false;
+        }
+
+        idx--;
+        while (idx >= 0 && char.IsWhiteSpace(expression[idx]))
+        {
+            idx--;
+        }
+
+        if (idx < 5)
+        {
+            return false;
+        }
+
+        var maybeNameEnd = idx;
+        while (idx >= 0 && char.IsLetter(expression[idx]))
+        {
+            idx--;
+        }
+
+        var functionName = expression[(idx + 1)..(maybeNameEnd + 1)];
+        return functionName.Equals("Format", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static string ResolveFieldName(string fieldRef)
     {
         var match = Regex.Match(fieldRef, "Fields!([A-Za-z_][A-Za-z0-9_]*)\\.", RegexOptions.IgnoreCase);

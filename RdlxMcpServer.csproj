@@ -14,4 +14,25 @@
     <PackageReference Include="ModelContextProtocol" Version="1.2.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="Helpers\JetSchemaHelper\**\*.cs" />
+    <None Remove="Helpers\JetSchemaHelper\**\*" />
+  </ItemGroup>
+
+  <Target Name="BuildJetSchemaHelper" AfterTargets="Build">
+    <MSBuild
+      Projects="$(MSBuildThisFileDirectory)Helpers\JetSchemaHelper\JetSchemaHelper.csproj"
+      Targets="Restore;Build"
+      Properties="Configuration=$(Configuration)" />
+
+    <ItemGroup>
+      <JetSchemaHelperFiles Include="$(MSBuildThisFileDirectory)Helpers\JetSchemaHelper\bin\$(Configuration)\net48\*.*" />
+    </ItemGroup>
+
+    <Copy
+      SourceFiles="@(JetSchemaHelperFiles)"
+      DestinationFiles="@(JetSchemaHelperFiles->'$(OutDir)JetSchemaHelper\%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>
