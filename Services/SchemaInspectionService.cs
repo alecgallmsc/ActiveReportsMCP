@@ -856,18 +856,12 @@ public sealed class SchemaInspectionService
 
     private static bool MatchesTableKey(string key, string? schemaName, string tableName)
     {
-        if (string.Equals(key, tableName, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
         if (string.IsNullOrWhiteSpace(schemaName))
         {
-            return false;
+            return string.Equals(key, tableName, StringComparison.OrdinalIgnoreCase);
         }
 
-        return string.Equals(key, BuildKey(schemaName, tableName), StringComparison.OrdinalIgnoreCase)
-            || string.Equals(key, tableName, StringComparison.OrdinalIgnoreCase);
+        return string.Equals(key, BuildKey(schemaName, tableName), StringComparison.OrdinalIgnoreCase);
     }
 
     private static HashSet<string> BuildAllowSet(IReadOnlyList<string>? tableAllowList)

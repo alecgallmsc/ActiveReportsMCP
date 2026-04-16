@@ -10,6 +10,12 @@ public sealed class ToolResult
     [JsonPropertyName("message")]
     public string? Message { get; init; }
 
+    [JsonPropertyName("reportId")]
+    public string? ReportId { get; init; }
+
+    [JsonPropertyName("versionId")]
+    public string? VersionId { get; init; }
+
     [JsonPropertyName("reportPath")]
     public string? ReportPath { get; init; }
 
