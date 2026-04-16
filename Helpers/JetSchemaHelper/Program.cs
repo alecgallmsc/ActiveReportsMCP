@@ -334,43 +334,18 @@ internal static class Program
 
     private static bool MatchesTableKey(string key, string schemaName, string tableName)
     {
-        var keySchema = ParseSchemaFromKey(key);
-        var keyTable = ParseTableNameFromKey(key);
-
-        if (!string.Equals(keyTable, tableName, StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (string.IsNullOrWhiteSpace(schemaName))
+        if (string.Equals(key, tableName, StringComparison.OrdinalIgnoreCase))
         {
             return true;
         }
 
-        return string.IsNullOrWhiteSpace(keySchema)
-            || string.Equals(keySchema, schemaName, StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static string ParseSchemaFromKey(string key)
-    {
-        var index = key.LastIndexOf('.');
-        if (index <= 0)
+        if (string.IsNullOrWhiteSpace(schemaName))
         {
-            return null;
+            return key.EndsWith("." + tableName, StringComparison.OrdinalIgnoreCase);
         }
 
-        return key.Substring(0, index);
-    }
-
-    private static string ParseTableNameFromKey(string key)
-    {
-        var index = key.LastIndexOf('.');
-        if (index < 0 || index == key.Length - 1)
-        {
-            return key;
-        }
-
-        return key.Substring(index + 1);
+        return string.Equals(key, BuildKey(schemaName, tableName), StringComparison.OrdinalIgnoreCase)
+            || string.Equals(key, tableName, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsAllowedTable(HashSet<string> allowSet, string schemaName, string tableName)
