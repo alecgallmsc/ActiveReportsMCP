@@ -19,7 +19,7 @@
     <None Remove="Helpers\JetSchemaHelper\**\*" />
   </ItemGroup>
 
-  <Target Name="BuildJetSchemaHelper" AfterTargets="Build">
+  <Target Name="BuildJetSchemaHelper" AfterTargets="Build" Condition="'$(OS)' == 'Windows_NT'">
     <MSBuild
       Projects="$(MSBuildThisFileDirectory)Helpers\JetSchemaHelper\JetSchemaHelper.csproj"
       Targets="Restore;Build"

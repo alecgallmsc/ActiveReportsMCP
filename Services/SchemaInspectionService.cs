@@ -105,9 +105,7 @@ public sealed class SchemaInspectionService
 
             foreach (var table in selectedTables)
             {
-                var key = BuildKey(table.SchemaName, table.TableName);
-                columnsByTable.TryGetValue(key, out var columns);
-                columns ??= [];
+                var columns = ResolveColumnsForTable(columnsByTable, table.SchemaName, table.TableName);
 
                 var orderedColumns = columns
                     .OrderBy(c => c.OrdinalPosition)
@@ -705,6 +703,7 @@ public sealed class SchemaInspectionService
     private static Dictionary<string, List<ColumnMeta>> ExtractColumns(DataTable columnRows)
     {
         var columnsByTable = new Dictionary<string, List<ColumnMeta>>(StringComparer.OrdinalIgnoreCase);
+        var keysByTableName = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (DataRow row in columnRows.Rows)
         {
@@ -723,6 +722,14 @@ public sealed class SchemaInspectionService
                 columnsByTable[key] = columns;
             }
 
+            if (!keysByTableName.TryGetValue(tableName, out var fullKeys))
+            {
+                fullKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                keysByTableName[tableName] = fullKeys;
+            }
+
+            fullKeys.Add(key);
+
             columns.Add(new ColumnMeta(
                 ColumnName: columnName,
                 TypeName: ReadString(row, "TYPE_NAME", "type_name"),
@@ -732,6 +739,20 @@ public sealed class SchemaInspectionService
                 MaxLength: ReadInt(row, "CHARACTER_MAXIMUM_LENGTH", "character_maximum_length", "COLUMN_SIZE", "column_size"),
                 NumericPrecision: ReadInt(row, "NUMERIC_PRECISION", "numeric_precision"),
                 NumericScale: ReadInt(row, "NUMERIC_SCALE", "numeric_scale")));
+        }
+
+        foreach (var (tableName, keys) in keysByTableName)
+        {
+            if (columnsByTable.ContainsKey(tableName) || keys.Count != 1)
+            {
+                continue;
+            }
+
+            var fullKey = keys.First();
+            if (columnsByTable.TryGetValue(fullKey, out var resolvedColumns))
+            {
+                columnsByTable[tableName] = resolvedColumns;
+            }
         }
 
         return columnsByTable;
@@ -754,8 +775,22 @@ public sealed class SchemaInspectionService
             foreach (var table in selectedTables)
             {
                 var restrictions = BuildColumnRestrictions(table.SchemaName, table.TableName);
-                var tableColumns = ExtractColumns(connection.GetSchema("Columns", restrictions));
-                MergeColumnMaps(scopedColumns, tableColumns);
+                var scopedResponse = ExtractColumns(connection.GetSchema("Columns", restrictions));
+
+                if (scopedResponse.Count == 0)
+                {
+                    continue;
+                }
+
+                if (!IsScopedResultForTable(scopedResponse.Keys, table.SchemaName, table.TableName))
+                {
+                    throw new InvalidOperationException("Provider returned unscoped column metadata.");
+                }
+
+                scopedColumns[BuildKey(table.SchemaName, table.TableName)] = ResolveColumnsForTable(
+                    scopedResponse,
+                    table.SchemaName,
+                    table.TableName);
             }
 
             return scopedColumns;
@@ -764,13 +799,17 @@ public sealed class SchemaInspectionService
         {
             usedFullScanFallback = true;
             var fullScan = ExtractColumns(connection.GetSchema("Columns"));
-            var allowedKeys = selectedTables
-                .Select(table => BuildKey(table.SchemaName, table.TableName))
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-            return fullScan
-                .Where(entry => allowedKeys.Contains(entry.Key))
-                .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+            var filtered = new Dictionary<string, List<ColumnMeta>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var table in selectedTables)
+            {
+                filtered[BuildKey(table.SchemaName, table.TableName)] = ResolveColumnsForTable(
+                    fullScan,
+                    table.SchemaName,
+                    table.TableName);
+            }
+
+            return filtered;
         }
     }
 
@@ -785,20 +824,44 @@ public sealed class SchemaInspectionService
         ];
     }
 
-    private static void MergeColumnMaps(
-        IDictionary<string, List<ColumnMeta>> destination,
-        IReadOnlyDictionary<string, List<ColumnMeta>> source)
+    private static bool IsScopedResultForTable(
+        IEnumerable<string> keys,
+        string? schemaName,
+        string tableName)
     {
-        foreach (var (key, columns) in source)
+        foreach (var key in keys)
         {
-            if (!destination.TryGetValue(key, out var existing))
+            if (!MatchesTableKey(key, schemaName, tableName))
             {
-                destination[key] = columns;
-                continue;
+                return false;
             }
-
-            existing.AddRange(columns);
         }
+
+        return true;
+    }
+
+    private static List<ColumnMeta> ResolveColumnsForTable(
+        IReadOnlyDictionary<string, List<ColumnMeta>> columnsByTable,
+        string? schemaName,
+        string tableName)
+    {
+        var resolved = columnsByTable
+            .Where(entry => MatchesTableKey(entry.Key, schemaName, tableName))
+            .SelectMany(entry => entry.Value)
+            .DistinctBy(column => $"{column.OrdinalPosition}:{column.ColumnName}", StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return resolved;
+    }
+
+    private static bool MatchesTableKey(string key, string? schemaName, string tableName)
+    {
+        if (string.IsNullOrWhiteSpace(schemaName))
+        {
+            return string.Equals(key, tableName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(key, BuildKey(schemaName, tableName), StringComparison.OrdinalIgnoreCase);
     }
 
     private static HashSet<string> BuildAllowSet(IReadOnlyList<string>? tableAllowList)
