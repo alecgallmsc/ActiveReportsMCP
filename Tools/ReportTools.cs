@@ -375,6 +375,7 @@ public sealed class ReportTools
             return loaded.Result;
         }
 
+        var targetPath = ToAbsolutePath(outputPath ?? loaded.Path!);
         var canonical = documents.Canonicalize(loaded.Rdlx!);
         var hash = RdlxDocumentService.ComputeHash(canonical);
 
@@ -384,7 +385,7 @@ public sealed class ReportTools
 
         if (includeRuntime)
         {
-            runtimeReport = runtimeVerification.Verify(loaded.Path!, "full");
+            runtimeReport = VerifyRuntimeAgainstCandidate(runtimeVerification, canonical, targetPath, "full");
             diagnostics.AddRange(runtimeReport.Diagnostics);
         }
 
@@ -395,11 +396,11 @@ public sealed class ReportTools
             {
                 Ok = false,
                 Message = "Save blocked by validation errors.",
-                ReportPath = loaded.Path,
+                ReportPath = targetPath,
                 Diagnostics = diagnostics,
                 Artifacts = new Dictionary<string, object?>
                 {
-                    ["filePath"] = loaded.Path,
+                    ["filePath"] = targetPath,
                     ["saveBlocked"] = true,
                     ["canonicalHash"] = hash,
                     ["runtime"] = runtimeReport
@@ -407,7 +408,7 @@ public sealed class ReportTools
             };
         }
 
-        var targetPath = WriteReport(canonical, outputPath ?? loaded.Path!);
+        targetPath = WriteReport(canonical, targetPath);
         return new ToolResult
         {
             Ok = true,
@@ -573,7 +574,7 @@ public sealed class ReportTools
             var patch = patcher(loaded.Rdlx!);
             var canonical = documents.Canonicalize(patch.Rdlx);
             var hash = RdlxDocumentService.ComputeHash(canonical);
-            var targetPath = WriteReport(canonical, outputPath ?? loaded.Path!);
+            var targetPath = ToAbsolutePath(outputPath ?? loaded.Path!);
             var validationReport = validation.Validate(canonical, ValidationLevel.Full);
 
             var diagnostics = patch.Diagnostics.Concat(validationReport.Diagnostics).ToList();
@@ -595,9 +596,23 @@ public sealed class ReportTools
                 }
             }
 
+            if (validationReport.BlockingCount > 0)
+            {
+                artifacts["patchBlocked"] = true;
+                return new ToolResult
+                {
+                    Ok = false,
+                    Message = "Patch blocked by validation errors.",
+                    ReportPath = targetPath,
+                    Diagnostics = diagnostics,
+                    Artifacts = artifacts
+                };
+            }
+
+            targetPath = WriteReport(canonical, targetPath);
             return new ToolResult
             {
-                Ok = validationReport.BlockingCount == 0,
+                Ok = true,
                 Message = successMessage,
                 ReportPath = targetPath,
                 Diagnostics = diagnostics,
@@ -638,8 +653,63 @@ public sealed class ReportTools
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(absolutePath, rdlx);
+        var tempPath = BuildTempSiblingPath(absolutePath);
+        File.WriteAllText(tempPath, rdlx);
+
+        try
+        {
+            if (File.Exists(absolutePath))
+            {
+                File.Replace(tempPath, absolutePath, null, ignoreMetadataErrors: true);
+            }
+            else
+            {
+                File.Move(tempPath, absolutePath);
+            }
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+
         return absolutePath;
+    }
+
+    private static RuntimeVerificationReport VerifyRuntimeAgainstCandidate(
+        RuntimeVerificationService runtimeVerification,
+        string candidateRdlx,
+        string targetPath,
+        string mode)
+    {
+        var tempPath = BuildTempSiblingPath(targetPath);
+        File.WriteAllText(tempPath, candidateRdlx);
+
+        try
+        {
+            return runtimeVerification.Verify(tempPath, mode);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+            {
+                File.Delete(tempPath);
+            }
+        }
+    }
+
+    private static string BuildTempSiblingPath(string destinationPath)
+    {
+        var directory = Path.GetDirectoryName(destinationPath);
+        if (string.IsNullOrWhiteSpace(directory))
+        {
+            directory = Directory.GetCurrentDirectory();
+        }
+
+        var fileName = Path.GetFileName(destinationPath);
+        return Path.Combine(directory, $".{fileName}.{Guid.NewGuid():N}.tmp");
     }
 
     private static Dictionary<string, object?> BuildArtifacts(string reportPath, string canonicalHash, string createdBy, object? extra = null)
