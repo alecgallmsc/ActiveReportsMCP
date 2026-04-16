@@ -254,8 +254,22 @@ internal static class Program
             foreach (var table in selectedTables)
             {
                 var restrictions = BuildColumnRestrictions(table.SchemaName, table.TableName);
-                var tableColumns = ExtractColumns(connection.GetSchema("Columns", restrictions));
-                MergeColumnMaps(scopedColumns, tableColumns);
+                var scopedResponse = ExtractColumns(connection.GetSchema("Columns", restrictions));
+
+                if (scopedResponse.Count == 0)
+                {
+                    continue;
+                }
+
+                if (!IsScopedResultForTable(scopedResponse.Keys, table.SchemaName, table.TableName))
+                {
+                    throw new InvalidOperationException("Provider returned unscoped column metadata.");
+                }
+
+                scopedColumns[BuildKey(table.SchemaName, table.TableName)] = ResolveColumnsForTable(
+                    scopedResponse,
+                    table.SchemaName,
+                    table.TableName);
             }
 
             return scopedColumns;
@@ -264,13 +278,17 @@ internal static class Program
         {
             usedFullScanFallback = true;
             var fullScan = ExtractColumns(connection.GetSchema("Columns"));
-            var allowedKeys = new HashSet<string>(
-                selectedTables.Select(table => BuildKey(table.SchemaName, table.TableName)),
-                StringComparer.OrdinalIgnoreCase);
 
-            return fullScan
-                .Where(entry => allowedKeys.Contains(entry.Key))
-                .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+            var filtered = new Dictionary<string, List<ColumnMeta>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var table in selectedTables)
+            {
+                filtered[BuildKey(table.SchemaName, table.TableName)] = ResolveColumnsForTable(
+                    fullScan,
+                    table.SchemaName,
+                    table.TableName);
+            }
+
+            return filtered;
         }
     }
 
@@ -285,21 +303,74 @@ internal static class Program
         };
     }
 
-    private static void MergeColumnMaps(
-        IDictionary<string, List<ColumnMeta>> destination,
-        IDictionary<string, List<ColumnMeta>> source)
+    private static bool IsScopedResultForTable(
+        IEnumerable<string> keys,
+        string schemaName,
+        string tableName)
     {
-        foreach (var entry in source)
+        foreach (var key in keys)
         {
-            List<ColumnMeta> existing;
-            if (!destination.TryGetValue(entry.Key, out existing))
+            if (!MatchesTableKey(key, schemaName, tableName))
             {
-                destination[entry.Key] = entry.Value;
-                continue;
+                return false;
             }
-
-            existing.AddRange(entry.Value);
         }
+
+        return true;
+    }
+
+    private static List<ColumnMeta> ResolveColumnsForTable(
+        IDictionary<string, List<ColumnMeta>> columnsByTable,
+        string schemaName,
+        string tableName)
+    {
+        return columnsByTable
+            .Where(entry => MatchesTableKey(entry.Key, schemaName, tableName))
+            .SelectMany(entry => entry.Value)
+            .GroupBy(column => column.OrdinalPosition + ":" + column.ColumnName, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+    }
+
+    private static bool MatchesTableKey(string key, string schemaName, string tableName)
+    {
+        var keySchema = ParseSchemaFromKey(key);
+        var keyTable = ParseTableNameFromKey(key);
+
+        if (!string.Equals(keyTable, tableName, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(schemaName))
+        {
+            return true;
+        }
+
+        return string.IsNullOrWhiteSpace(keySchema)
+            || string.Equals(keySchema, schemaName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ParseSchemaFromKey(string key)
+    {
+        var index = key.LastIndexOf('.');
+        if (index <= 0)
+        {
+            return null;
+        }
+
+        return key.Substring(0, index);
+    }
+
+    private static string ParseTableNameFromKey(string key)
+    {
+        var index = key.LastIndexOf('.');
+        if (index < 0 || index == key.Length - 1)
+        {
+            return key;
+        }
+
+        return key.Substring(index + 1);
     }
 
     private static bool IsAllowedTable(HashSet<string> allowSet, string schemaName, string tableName)
