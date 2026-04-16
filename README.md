@@ -55,6 +55,26 @@ Use `op="add_chart"` with `valueExpression` options:
 - `aggregate=Sum|Avg|Min|Max|Count|CountDistinct|First|Last`
 - optional `series=Region`, `legend=true|false`, `palette=Default`, `title=...`
 
+### `add_table` / `add_tablix` expression options
+
+Use `valueExpression` to override row expressions for headers/details/footers and grouped rows:
+
+- Base options: `dataset=...`, `columns=...`, `groupBy=...`
+- Row list overrides (pipe-separated):
+  - `headerexprs=...|...|...`
+  - `detailexprs=...|...|...`
+  - `footerexprs=...|...|...`
+  - `groupheaderexprs=...|...|...`
+  - `groupfooterexprs=...|...|...`
+- Per-column overrides:
+  - ordinal keys: `headerexpr1=...`, `groupfooterexpr3=...`
+  - name keys: `footerexpr.TotalAmount=...`, `groupheaderexpr.CustomerName=...`
+- Expression handling:
+  - values starting with `=` are used as-is
+  - aggregate shortcuts like `Sum(TotalAmount)` are expanded to valid field expressions
+  - plain text is converted to string literals (for example `Grand Total` -> `="Grand Total"`)
+  - `report_patch_formatting` now auto-inlines `Format(...)` for matching numeric segments inside mixed label+number expressions (for example `="Value: " & Sum(...)`)
+
 ### `report_inspect_schema` consent flow
 
 - The tool never runs without explicit `confirm=true`.
@@ -62,6 +82,7 @@ Use `op="add_chart"` with `valueExpression` options:
 - Scope is schema metadata only (tables/views/columns/types/nullability/ordinals).
 - The tool does not run user SQL and does not read table row values.
 - Use `tableAllowList`, `maxTables`, and `maxColumnsPerTable` for least-privilege inspection.
+- For `Provider=Microsoft.Jet.OLEDB.*`, schema inspection uses a bundled `x86` helper process (`JetSchemaHelper`) to support legacy Jet provider loading while keeping the main MCP host on `net10.0`.
 
 ## Notes
 

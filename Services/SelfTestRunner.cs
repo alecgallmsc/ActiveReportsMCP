@@ -99,7 +99,7 @@ public sealed class SelfTestRunner
                     Y = "0.7in",
                     Width = "6.8in",
                     Height = "2.0in",
-                    ValueExpression = "dataset=InvoiceData;groupBy=CustomerName;columns=InvoiceId,CustomerName,TotalAmount"
+                    ValueExpression = "dataset=InvoiceData;groupBy=CustomerName;columns=InvoiceId,CustomerName,TotalAmount;headerexpr3=Invoice Total;groupfooterexpr1=SubTotal;groupfooterexpr3==\"SubTotal: \" & Sum(Fields!TotalAmount.Value);footerexpr1=Grand Total;footerexpr3==\"Grand Total: \" & Sum(Fields!TotalAmount.Value)"
                 },
                 new LayoutOperation
                 {

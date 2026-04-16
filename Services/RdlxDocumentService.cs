@@ -1112,13 +1112,14 @@ public sealed partial class RdlxDocumentService
             ? Math.Min(requestedWidth, fit.AvailableWidth.Value)
             : requestedWidth;
         var columnWidth = tableWidth / Math.Max(columns.Count, 1);
+        var expressions = ResolveTableExpressions(columns, groupByExpression, options, diagnostics, tableName);
 
         var tablixColumns = new XElement(ns + "TablixColumns",
             columns.Select(_ =>
                 new XElement(ns + "TablixColumn",
                     new XElement(ns + "Width", FormatInches(columnWidth)))));
 
-        var headerRow = BuildTablixRow(ns, columns.Select(TitleizeColumnName), $"{tableName}_hdr");
+        var headerRow = BuildTablixRow(ns, expressions.HeaderValues, $"{tableName}_hdr");
 
         XElement tablixRows;
         XElement rowHierarchy;
@@ -1126,17 +1127,26 @@ public sealed partial class RdlxDocumentService
         if (!string.IsNullOrWhiteSpace(groupByExpression))
         {
             var groupFieldName = DeriveFieldNameFromExpression(groupByExpression) ?? "Group";
-            var groupLabelExpression = groupByExpression;
-            var groupRowValues = columns.Select((column, idx) =>
-                idx == 0
-                    ? groupLabelExpression
-                    : "=\"\"").ToArray();
-            var detailValues = columns.Select(column => $"=Fields!{column}.Value").ToArray();
+            var groupRow = BuildTablixRow(ns, expressions.GroupHeaderValues!, $"{tableName}_grp");
+            var detailRow = BuildTablixRow(ns, expressions.DetailValues, $"{tableName}_dtl");
+            var bodyRows = new List<XElement> { headerRow, groupRow, detailRow };
 
-            var groupRow = BuildTablixRow(ns, groupRowValues, $"{tableName}_grp");
-            var detailRow = BuildTablixRow(ns, detailValues, $"{tableName}_dtl");
+            XElement? groupFooterMember = null;
+            if (expressions.GroupFooterValues is not null)
+            {
+                var groupFooterRow = BuildTablixRow(ns, expressions.GroupFooterValues, $"{tableName}_grp_ftr");
+                bodyRows.Add(groupFooterRow);
+                groupFooterMember = new XElement(ns + "TablixMember",
+                    new XElement(ns + "KeepWithGroup", "Before"));
+            }
 
-            tablixRows = new XElement(ns + "TablixRows", headerRow, groupRow, detailRow);
+            if (expressions.FooterValues is not null)
+            {
+                var footerRow = BuildTablixRow(ns, expressions.FooterValues, $"{tableName}_ftr");
+                bodyRows.Add(footerRow);
+            }
+
+            tablixRows = new XElement(ns + "TablixRows", bodyRows);
 
             var detailsMember = new XElement(ns + "TablixMember",
                 new XElement(ns + "Group",
@@ -1154,29 +1164,57 @@ public sealed partial class RdlxDocumentService
                 new XElement(ns + "SortExpressions",
                     new XElement(ns + "SortExpression",
                         new XElement(ns + "Value", groupByExpression))),
-                new XElement(ns + "TablixMembers", groupHeaderMember, detailsMember));
+                new XElement(ns + "TablixMembers",
+                    groupFooterMember is null
+                        ? new object[] { groupHeaderMember, detailsMember }
+                        : new object[] { groupHeaderMember, detailsMember, groupFooterMember }));
+
+            var rootMembers = new List<XElement>
+            {
+                new(ns + "TablixMember",
+                    new XElement(ns + "KeepWithGroup", "After"),
+                    new XElement(ns + "RepeatOnNewPage", "true")),
+                categoryGroupMember
+            };
+
+            if (expressions.FooterValues is not null)
+            {
+                rootMembers.Add(new XElement(ns + "TablixMember",
+                    new XElement(ns + "KeepWithGroup", "Before")));
+            }
 
             rowHierarchy = new XElement(ns + "TablixRowHierarchy",
-                new XElement(ns + "TablixMembers",
-                    new XElement(ns + "TablixMember",
-                        new XElement(ns + "KeepWithGroup", "After"),
-                        new XElement(ns + "RepeatOnNewPage", "true")),
-                    categoryGroupMember));
+                new XElement(ns + "TablixMembers", rootMembers));
         }
         else
         {
-            var detailValues = columns.Select(column => $"=Fields!{column}.Value").ToArray();
-            var detailRow = BuildTablixRow(ns, detailValues, $"{tableName}_dtl");
-            tablixRows = new XElement(ns + "TablixRows", headerRow, detailRow);
+            var detailRow = BuildTablixRow(ns, expressions.DetailValues, $"{tableName}_dtl");
+            var bodyRows = new List<XElement> { headerRow, detailRow };
+            if (expressions.FooterValues is not null)
+            {
+                bodyRows.Add(BuildTablixRow(ns, expressions.FooterValues, $"{tableName}_ftr"));
+            }
+
+            tablixRows = new XElement(ns + "TablixRows", bodyRows);
+
+            var rootMembers = new List<XElement>
+            {
+                new XElement(ns + "TablixMember",
+                    new XElement(ns + "KeepWithGroup", "After"),
+                    new XElement(ns + "RepeatOnNewPage", "true")),
+                new XElement(ns + "TablixMember",
+                    new XElement(ns + "Group",
+                        new XAttribute("Name", NormalizeName($"{tableName}_details", "Details"))))
+            };
+
+            if (expressions.FooterValues is not null)
+            {
+                rootMembers.Add(new XElement(ns + "TablixMember",
+                    new XElement(ns + "KeepWithGroup", "Before")));
+            }
 
             rowHierarchy = new XElement(ns + "TablixRowHierarchy",
-                new XElement(ns + "TablixMembers",
-                    new XElement(ns + "TablixMember",
-                        new XElement(ns + "KeepWithGroup", "After"),
-                        new XElement(ns + "RepeatOnNewPage", "true")),
-                    new XElement(ns + "TablixMember",
-                        new XElement(ns + "Group",
-                            new XAttribute("Name", NormalizeName($"{tableName}_details", "Details"))))));
+                new XElement(ns + "TablixMembers", rootMembers));
         }
 
         var columnHierarchy = new XElement(ns + "TablixColumnHierarchy",
@@ -1196,12 +1234,17 @@ public sealed partial class RdlxDocumentService
             });
         }
 
+        var containerRows = 2
+            + (groupByExpression is null ? 0 : 1)
+            + (groupByExpression is null || expressions.GroupFooterValues is null ? 0 : 1)
+            + (expressions.FooterValues is null ? 0 : 1);
+
         var tablix = new XElement(ns + "Tablix",
             new XAttribute("Name", tableName),
             new XElement(ns + "Top", op.Y ?? "0.8in"),
             new XElement(ns + "Left", op.X ?? "0.2in"),
-            // Keep design-time container compact. Row height is controlled by TableRow entries.
-            new XElement(ns + "Height", string.IsNullOrWhiteSpace(groupByExpression) ? "0.5in" : "0.75in"),
+            // Keep design-time container compact while supporting optional footer rows.
+            new XElement(ns + "Height", FormatInches(containerRows * 0.25)),
             new XElement(ns + "Width", FormatInches(tableWidth)),
             new XElement(ns + "DataSetName", dataSetName),
             new XElement(ns + "TablixBody", tablixColumns, tablixRows),
@@ -1230,15 +1273,15 @@ public sealed partial class RdlxDocumentService
             ? Math.Min(requestedWidth, fit.AvailableWidth.Value)
             : requestedWidth;
         var columnWidth = tableWidth / Math.Max(columns.Count, 1);
+        var expressions = ResolveTableExpressions(columns, groupByExpression, options, diagnostics, tableName);
 
         var tableColumns = new XElement(ns + "TableColumns",
             columns.Select(_ =>
                 new XElement(ns + "TableColumn",
                     new XElement(ns + "Width", FormatInches(columnWidth)))));
 
-        var headerRow = BuildTableRow(ns, columns.Select(TitleizeColumnName), $"{tableName}_hdr");
-        var detailValues = columns.Select(column => $"=Fields!{column}.Value").ToArray();
-        var detailRow = BuildTableRow(ns, detailValues, $"{tableName}_dtl");
+        var headerRow = BuildTableRow(ns, expressions.HeaderValues, $"{tableName}_hdr");
+        var detailRow = BuildTableRow(ns, expressions.DetailValues, $"{tableName}_dtl");
 
         var header = new XElement(ns + "Header",
             new XElement(ns + "TableRows", headerRow),
@@ -1251,8 +1294,14 @@ public sealed partial class RdlxDocumentService
         if (!string.IsNullOrWhiteSpace(groupByExpression))
         {
             var groupFieldName = DeriveFieldNameFromExpression(groupByExpression) ?? "Group";
-            var groupRowValues = columns.Select((_, idx) => idx == 0 ? groupByExpression : "=\"\"");
-            var groupHeaderRow = BuildTableRow(ns, groupRowValues, $"{tableName}_grp");
+            var groupHeaderRow = BuildTableRow(ns, expressions.GroupHeaderValues!, $"{tableName}_grp");
+
+            XElement? groupFooter = null;
+            if (expressions.GroupFooterValues is not null)
+            {
+                groupFooter = new XElement(ns + "Footer",
+                    new XElement(ns + "TableRows", BuildTableRow(ns, expressions.GroupFooterValues, $"{tableName}_grp_ftr")));
+            }
 
             tableGroups = new XElement(ns + "TableGroups",
                 new XElement(ns + "TableGroup",
@@ -1262,7 +1311,8 @@ public sealed partial class RdlxDocumentService
                             new XElement(ns + "GroupExpression", groupByExpression))),
                     new XElement(ns + "Header",
                         new XElement(ns + "TableRows", groupHeaderRow),
-                        new XElement(ns + "RepeatOnNewPage", "true"))));
+                        new XElement(ns + "RepeatOnNewPage", "true")),
+                    groupFooter));
 
             if (!columns.Any(column => string.Equals(column, groupFieldName, StringComparison.OrdinalIgnoreCase)))
             {
@@ -1277,21 +1327,249 @@ public sealed partial class RdlxDocumentService
             }
         }
 
+        XElement? footer = null;
+        if (expressions.FooterValues is not null)
+        {
+            footer = new XElement(ns + "Footer",
+                new XElement(ns + "TableRows", BuildTableRow(ns, expressions.FooterValues, $"{tableName}_ftr")));
+        }
+
+        var containerRows = 2
+            + (groupByExpression is null ? 0 : 1)
+            + (groupByExpression is null || expressions.GroupFooterValues is null ? 0 : 1)
+            + (expressions.FooterValues is null ? 0 : 1);
+
         var table = new XElement(ns + "Table",
             new XAttribute("Name", tableName),
             new XElement(ns + "Top", op.Y ?? "0.8in"),
             new XElement(ns + "Left", op.X ?? "0.2in"),
-            new XElement(ns + "Height", string.IsNullOrWhiteSpace(groupByExpression) ? "0.5in" : "0.75in"),
+            new XElement(ns + "Height", FormatInches(containerRows * 0.25)),
             new XElement(ns + "Width", FormatInches(tableWidth)),
             new XElement(ns + "DataSetName", dataSetName),
             tableColumns,
             header,
             tableGroups,
-            details);
+            details,
+            footer);
 
         EnsureFitsPrintableWidth(root, table, diagnostics, tableName, options);
 
         return table;
+    }
+
+    private static RowExpressions ResolveTableExpressions(
+        IReadOnlyList<string> columns,
+        string? groupByExpression,
+        IReadOnlyDictionary<string, string> options,
+        List<DiagnosticEntry> diagnostics,
+        string owner)
+    {
+        var headerValues = columns.Select(TitleizeColumnName).ToArray();
+        var detailValues = columns.Select(column => $"=Fields!{column}.Value").ToArray();
+        var groupHeaderValues = string.IsNullOrWhiteSpace(groupByExpression)
+            ? null
+            : columns.Select((_, idx) => idx == 0 ? groupByExpression! : "=\"\"").ToArray();
+
+        ApplyRowExpressionOverrides(columns, options, "headerexpr", headerValues, diagnostics, owner, "header");
+        ApplyRowExpressionOverrides(columns, options, "detailexpr", detailValues, diagnostics, owner, "detail");
+
+        var footerValues = BuildOptionalRowValues(
+            columns,
+            options,
+            "footerexpr",
+            diagnostics,
+            owner,
+            "footer");
+
+        if (groupHeaderValues is not null)
+        {
+            ApplyRowExpressionOverrides(columns, options, "groupheaderexpr", groupHeaderValues, diagnostics, owner, "groupHeader");
+        }
+        else if (HasRowExpressionOverrides(options, "groupheaderexpr"))
+        {
+            diagnostics.Add(new DiagnosticEntry
+            {
+                Stage = "layout",
+                Severity = "Warning",
+                Code = "GROUP_HEADER_EXPR_IGNORED",
+                Message = "Group header expressions were provided but no groupBy expression exists.",
+                Owner = owner
+            });
+        }
+
+        var groupFooterValues = BuildOptionalRowValues(
+            columns,
+            options,
+            "groupfooterexpr",
+            diagnostics,
+            owner,
+            "groupFooter");
+
+        if (groupHeaderValues is null && groupFooterValues is not null)
+        {
+            diagnostics.Add(new DiagnosticEntry
+            {
+                Stage = "layout",
+                Severity = "Warning",
+                Code = "GROUP_FOOTER_EXPR_IGNORED",
+                Message = "Group footer expressions were provided but no groupBy expression exists.",
+                Owner = owner
+            });
+
+            groupFooterValues = null;
+        }
+
+        return new RowExpressions(headerValues, detailValues, footerValues, groupHeaderValues, groupFooterValues);
+    }
+
+    private static string[]? BuildOptionalRowValues(
+        IReadOnlyList<string> columns,
+        IReadOnlyDictionary<string, string> options,
+        string prefix,
+        List<DiagnosticEntry> diagnostics,
+        string owner,
+        string rowRole)
+    {
+        if (!HasRowExpressionOverrides(options, prefix))
+        {
+            return null;
+        }
+
+        var values = Enumerable.Repeat("=\"\"", columns.Count).ToArray();
+        ApplyRowExpressionOverrides(columns, options, prefix, values, diagnostics, owner, rowRole);
+        return values;
+    }
+
+    private static bool HasRowExpressionOverrides(IReadOnlyDictionary<string, string> options, string prefix)
+    {
+        return options.Keys.Any(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void ApplyRowExpressionOverrides(
+        IReadOnlyList<string> columns,
+        IReadOnlyDictionary<string, string> options,
+        string prefix,
+        string[] target,
+        List<DiagnosticEntry> diagnostics,
+        string owner,
+        string rowRole)
+    {
+        if (target.Length == 0)
+        {
+            return;
+        }
+
+        var listOption = GetOption(options, $"{prefix}s", $"{prefix}expressions");
+        if (!string.IsNullOrWhiteSpace(listOption))
+        {
+            var tokens = listOption.Split('|');
+            var applied = Math.Min(tokens.Length, target.Length);
+            for (var i = 0; i < applied; i++)
+            {
+                target[i] = NormalizeRowExpressionToken(tokens[i], columns[i]);
+            }
+
+            if (tokens.Length > target.Length)
+            {
+                diagnostics.Add(new DiagnosticEntry
+                {
+                    Stage = "layout",
+                    Severity = "Warning",
+                    Code = "ROW_EXPR_TRUNCATED",
+                    Message = $"{rowRole} expressions exceed column count; extra expressions were ignored.",
+                    Owner = owner
+                });
+            }
+        }
+
+        for (var i = 0; i < target.Length; i++)
+        {
+            var ordinalKey = $"{prefix}{i + 1}";
+            if (options.TryGetValue(ordinalKey, out var ordinalValue) && !string.IsNullOrWhiteSpace(ordinalValue))
+            {
+                target[i] = NormalizeRowExpressionToken(ordinalValue, columns[i]);
+            }
+
+            var namedKey = $"{prefix}.{columns[i]}";
+            if (options.TryGetValue(namedKey, out var namedValue) && !string.IsNullOrWhiteSpace(namedValue))
+            {
+                target[i] = NormalizeRowExpressionToken(namedValue, columns[i]);
+            }
+        }
+    }
+
+    private static string NormalizeRowExpressionToken(string token, string columnName)
+    {
+        var trimmed = token.Trim();
+        if (trimmed.Length == 0)
+        {
+            return "=\"\"";
+        }
+
+        if (trimmed.StartsWith('='))
+        {
+            return trimmed;
+        }
+
+        if (trimmed.StartsWith("Fields!", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"={trimmed}";
+        }
+
+        if (TryExpandAggregateShortcut(trimmed, out var aggregateExpression))
+        {
+            return aggregateExpression;
+        }
+
+        if (string.Equals(trimmed, columnName, StringComparison.OrdinalIgnoreCase))
+        {
+            return $"=Fields!{columnName}.Value";
+        }
+
+        if (LooksExpressionLike(trimmed))
+        {
+            return $"={trimmed}";
+        }
+
+        return $"=\"{EscapeExpressionLiteral(trimmed)}\"";
+    }
+
+    private static bool TryExpandAggregateShortcut(string token, out string expression)
+    {
+        var match = Regex.Match(
+            token,
+            "^(?<func>Sum|Avg|Min|Max|Count|CountDistinct|First|Last)\\((?<arg>[^)]+)\\)$",
+            RegexOptions.IgnoreCase);
+
+        if (!match.Success)
+        {
+            expression = string.Empty;
+            return false;
+        }
+
+        var func = match.Groups["func"].Value;
+        var arg = match.Groups["arg"].Value.Trim();
+
+        if (arg.StartsWith("Fields!", StringComparison.OrdinalIgnoreCase))
+        {
+            expression = $"={func}({arg})";
+            return true;
+        }
+
+        if (Regex.IsMatch(arg, "^[A-Za-z_][A-Za-z0-9_]*$"))
+        {
+            expression = $"={func}(Fields!{arg}.Value)";
+            return true;
+        }
+
+        expression = $"={func}({arg})";
+        return true;
+    }
+
+    private static bool LooksExpressionLike(string token)
+    {
+        return token.Contains("Fields!", StringComparison.OrdinalIgnoreCase)
+            || Regex.IsMatch(token, "^(Sum|Avg|Min|Max|Count|CountDistinct|First|Last|IIf|RunningValue|RowNumber)\\(", RegexOptions.IgnoreCase);
     }
 
     private static XElement BuildTablixRow(XNamespace ns, IEnumerable<string> values, string namePrefix)
@@ -1347,4 +1625,11 @@ public sealed partial class RdlxDocumentService
         var match = Regex.Match(expression, "Fields!([A-Za-z_][A-Za-z0-9_]*)\\.");
         return match.Success ? match.Groups[1].Value : null;
     }
+
+    private sealed record RowExpressions(
+        string[] HeaderValues,
+        string[] DetailValues,
+        string[]? FooterValues,
+        string[]? GroupHeaderValues,
+        string[]? GroupFooterValues);
 }

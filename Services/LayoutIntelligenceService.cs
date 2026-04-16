@@ -63,7 +63,7 @@ public sealed partial class LayoutIntelligenceService
             var matched = textboxes.Where(tb =>
             {
                 var value = tb.Element(ns + "Value")?.Value ?? string.Empty;
-                return value.Contains($"Fields!{fieldName}.", StringComparison.OrdinalIgnoreCase);
+                return ExpressionReferencesField(value, fieldName);
             }).ToList();
 
             if (matched.Count == 0)
@@ -81,6 +81,22 @@ public sealed partial class LayoutIntelligenceService
 
             foreach (var textbox in matched)
             {
+                var valueNode = textbox.Element(ns + "Value");
+                if (valueNode is not null
+                    && NeedsInlineNumericFormatting(valueNode.Value, fieldName)
+                    && TryApplyInlineNumericFormatting(valueNode.Value, fieldName, rule.FormatString, out var formattedExpression))
+                {
+                    valueNode.Value = formattedExpression;
+                    diagnostics.Add(new DiagnosticEntry
+                    {
+                        Stage = "formatting",
+                        Severity = "Information",
+                        Code = "FORMAT_INLINE_APPLIED",
+                        Message = $"Applied inline numeric formatting for '{fieldName}' in mixed expression.",
+                        Owner = textbox.Attribute("Name")?.Value
+                    });
+                }
+
                 // Keep format style-only for compatibility with current designer/runtime behavior.
                 textbox.Element(ns + "Format")?.Remove();
                 EnsureChild(EnsureChild(textbox, ns + "Style"), ns + "Format").Value = rule.FormatString;

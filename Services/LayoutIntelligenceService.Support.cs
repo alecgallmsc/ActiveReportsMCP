@@ -66,6 +66,174 @@ public sealed partial class LayoutIntelligenceService
             || expression.Contains("$", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool NeedsInlineNumericFormatting(string? expression, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(expression))
+        {
+            return false;
+        }
+
+        // Only rewrite mixed/labeled expressions where Style.Format cannot format embedded numbers.
+        return expression.Contains('&')
+            && ExpressionReferencesField(expression, fieldName);
+    }
+
+    private static bool ExpressionReferencesField(string expression, string fieldName)
+    {
+        if (expression.Contains($"Fields!{fieldName}.", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var escaped = Regex.Escape(fieldName);
+        return Regex.IsMatch(
+            expression,
+            $"\\b(?:Sum|Avg|Min|Max|Count|CountDistinct|First|Last)\\s*\\(\\s*{escaped}\\s*\\)",
+            RegexOptions.IgnoreCase);
+    }
+
+    private static bool TryApplyInlineNumericFormatting(string expression, string fieldName, string formatString, out string formatted)
+    {
+        formatted = expression;
+        var terms = SplitTopLevelConcatenationTerms(expression);
+        if (terms.Count < 2)
+        {
+            return false;
+        }
+
+        var changed = false;
+        for (var i = 0; i < terms.Count; i++)
+        {
+            var rewritten = TryRewriteConcatenatedTerm(terms[i], fieldName, formatString, i == 0, out var replacement);
+            if (!rewritten)
+            {
+                continue;
+            }
+
+            terms[i] = replacement;
+            changed = true;
+        }
+
+        if (!changed)
+        {
+            return false;
+        }
+
+        formatted = EnsureSingleLeadingEquals(string.Join(" & ", terms));
+        return true;
+    }
+
+    private static string EnsureSingleLeadingEquals(string expression)
+    {
+        var trimmed = expression.TrimStart();
+        return trimmed.StartsWith('=')
+            ? trimmed
+            : "=" + trimmed;
+    }
+
+    private static bool TryRewriteConcatenatedTerm(string rawTerm, string fieldName, string formatString, bool isFirstTerm, out string rewritten)
+    {
+        rewritten = rawTerm;
+        var term = rawTerm.Trim();
+        if (term.Length == 0)
+        {
+            return false;
+        }
+
+        if (isFirstTerm && term.StartsWith('='))
+        {
+            term = term[1..].TrimStart();
+        }
+
+        if (term.StartsWith("Format(", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var escapedField = Regex.Escape(fieldName);
+        var fieldPattern = $"^Fields!{escapedField}\\.Value$";
+        if (Regex.IsMatch(term, fieldPattern, RegexOptions.IgnoreCase))
+        {
+            rewritten = BuildFormatWrapper(term, formatString);
+            return true;
+        }
+
+        var aggregateMatch = Regex.Match(
+            term,
+            $"^(?<func>Sum|Avg|Min|Max|Count|CountDistinct|First|Last)\\s*\\(\\s*(?<arg>Fields!{escapedField}\\.Value|{escapedField})\\s*\\)$",
+            RegexOptions.IgnoreCase);
+        if (!aggregateMatch.Success)
+        {
+            return false;
+        }
+
+        var arg = aggregateMatch.Groups["arg"].Value;
+        if (string.Equals(arg, fieldName, StringComparison.OrdinalIgnoreCase))
+        {
+            arg = $"Fields!{fieldName}.Value";
+        }
+
+        var aggregateExpression = $"{aggregateMatch.Groups["func"].Value}({arg})";
+        rewritten = BuildFormatWrapper(aggregateExpression, formatString);
+        return true;
+    }
+
+    private static List<string> SplitTopLevelConcatenationTerms(string expression)
+    {
+        var terms = new List<string>();
+        var start = 0;
+        var depth = 0;
+        var inString = false;
+
+        for (var i = 0; i < expression.Length; i++)
+        {
+            var ch = expression[i];
+            if (ch == '"')
+            {
+                if (inString && i + 1 < expression.Length && expression[i + 1] == '"')
+                {
+                    i++;
+                    continue;
+                }
+
+                inString = !inString;
+                continue;
+            }
+
+            if (inString)
+            {
+                continue;
+            }
+
+            if (ch == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch == ')')
+            {
+                depth = Math.Max(0, depth - 1);
+                continue;
+            }
+
+            if (ch == '&' && depth == 0)
+            {
+                terms.Add(expression[start..i].Trim());
+                start = i + 1;
+            }
+        }
+
+        terms.Add(expression[start..].Trim());
+        return terms;
+    }
+
+    private static string BuildFormatWrapper(string expression, string formatString)
+    {
+        var escapedFormat = formatString.Replace("\"", "\"\"");
+        return $"Format({expression}, \"{escapedFormat}\")";
+    }
+
     private static string ResolveFieldName(string fieldRef)
     {
         var match = Regex.Match(fieldRef, "Fields!([A-Za-z_][A-Za-z0-9_]*)\\.", RegexOptions.IgnoreCase);
